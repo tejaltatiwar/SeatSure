@@ -1,0 +1,37 @@
+# Production overrides. Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What changes:
+#   - Nothing except Caddy is reachable from the internet (ports 80 and 443).
+#     The base file publishes the database, Redis, Kafka and API ports for local development;
+#     on a public server that would expose them, so they are reset here.
+#   - Caddy serves the site over HTTPS with an automatic Let's Encrypt certificate.
+
+services:
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  kafka:
+    ports: !reset []
+  api:
+    ports: !reset []
+  web:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - web
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env, for example seatsure.203-0-113-10.sslip.io}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+volumes:
+  caddy-data:

@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: seatsure-notification-service
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      group-id: notification-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: com.seatsure.notification.BookingEvent
+        spring.json.use.type.headers: false
+        spring.json.trusted.packages: com.seatsure.notification
+
+server:
+  port: 8081
+
+app:
+  kafka:
+    booking-events-topic: ${BOOKING_EVENTS_TOPIC:booking-events}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

@@ -1,0 +1,6 @@
+# Caddy gets and renews the HTTPS certificate for {$DOMAIN} by itself.
+# The domain must point at this server (a free sslip.io name does, see the README).
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy web:80
+}

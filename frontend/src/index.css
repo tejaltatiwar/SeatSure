@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #e9eef2;
+  --color-card: #ffffff;
+  --color-ink: #14213d;
+  --color-ink-soft: #4a5872;
+  --color-line: #cbd5dd;
+  --color-seat-free: #0b7a7c;
+  --color-seat-picked: #f2a33a;
+  --color-seat-taken: #c3cad3;
+  --color-alert: #c73e54;
+  --color-ok: #1f7a4d;
+
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+    background: var(--color-paper);
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--color-seat-picked);
+    outline-offset: 2px;
+  }
+}
+
+/*
+ * Ticket-stub card: a perforation notch is cut out of the top and bottom edge where the
+ * stub starts. --stub is the stub's width, so the notch always lines up with the divider.
+ */
+.ticket {
+  --stub: 9.5rem;
+  --notch: 0.7rem;
+  -webkit-mask:
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 0, #0000 98%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 100%, #0000 98%, #000) bottom / 100% 51% no-repeat;
+  mask:
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 0, #0000 98%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 100%, #0000 98%, #000) bottom / 100% 51% no-repeat;
+}
+
+.ticket-stub {
+  width: var(--stub);
+  border-left: 2px dashed var(--color-line);
+}
+
+/* Seats: shape and label carry the state, colour only reinforces it. */
+.seat {
+  display: inline-flex;
+  height: 2.25rem;
+  width: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.6rem 0.6rem 0.25rem 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.seat[data-state="free"] {
+  background: var(--color-seat-free);
+  color: #fff;
+}
+
+.seat[data-state="free"]:hover {
+  transform: translateY(-2px);
+}
+
+.seat[data-state="picked"] {
+  background: var(--color-seat-picked);
+  color: var(--color-ink);
+  box-shadow: inset 0 0 0 2px var(--color-ink);
+  transform: translateY(-2px);
+}
+
+.seat[data-state="taken"] {
+  background: repeating-linear-gradient(135deg, var(--color-seat-taken) 0 4px, #dde3e9 4px 8px);
+  color: transparent;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat {
+    transition: none;
+  }
+}
