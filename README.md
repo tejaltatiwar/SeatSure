@@ -1,207 +1,158 @@
 # SeatSure
 
-SeatSure is a full-stack event ticketing application built around reliable seat reservations. Customers can browse events, choose seats from a live seat map, hold seats temporarily, complete a simulated payment, and view their bookings.
+[![CI](https://github.com/tejaltatiwar/SeatSure/actions/workflows/ci.yml/badge.svg)](https://github.com/tejaltatiwar/SeatSure/actions/workflows/ci.yml)
 
-> **Live demo:** Not deployed yet. Follow [Deploy the application](#deploy-the-application) to publish a working demo. Pushing this repository to GitHub makes the source code available; it does not host the application.
+An event seat-booking platform. Browse events, pick seats on a live map, hold them for five minutes, pay, and get a confirmation. It is built around one hard problem: staying correct when many people want the same seat at the same moment.
 
-![SeatSure events page](docs/screenshots/events.png)
+**Try it:** run it locally with one command (see [Run it locally](#run-it-locally)), sign in as `demo@seatsure.dev`, pick seats, and pay with the test card **Visa ending 4242**. No real payment is made.
 
-![Seat selection map](docs/screenshots/seat-map.png)
-
-![Checkout page](docs/screenshots/checkout.png)
+![Events](docs/screenshots/events.png)
+![Seat map](docs/screenshots/seat-map.png)
+![Checkout](docs/screenshots/checkout.png)
 
 ## Features
 
-- Browse events and inspect seat availability.
-- Register, sign in, and manage bookings.
-- Hold up to six seats for five minutes; expired holds are released automatically.
-- Prevent double booking with Redis seat holds backed by PostgreSQL constraints.
-- Process simulated payments with idempotency keys, decline handling, retries, and a circuit breaker.
-- Publish booking events to Kafka and consume them in a separate notification service.
-- Create events through an admin-only API.
+- **Browse and book.** Public event list and seat map. Signed-in customers hold up to 6 seats, pay, and see their bookings.
+- **Seat holds that expire.** A hold lasts 5 minutes. If payment does not arrive, a scheduler frees the seats and notifies the customer.
+- **Safe payments.** Paying twice with the same `Idempotency-Key` never charges twice. A declined card leaves the booking payable.
+- **Async notifications.** Booking outcomes are published to Kafka and consumed by a separate service that sends the emails (logged in this demo).
+- **Admin.** Admins create events and their seat grid through `POST /api/v1/admin/events`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser --> Web["React app served by nginx"]
-    Web -->|/api| API["Spring Boot API"]
-    API --> PostgreSQL
-    API --> Redis
-    API -->|booking events| Kafka
-    Kafka --> Notifications["Notification service"]
+    Browser --> Web["Web<br/>React + nginx"]
+    Web -->|/api| API["SeatSure API<br/>Spring Boot"]
+    API --> PG[("PostgreSQL<br/>source of truth")]
+    API --> Redis[("Redis<br/>seat holds, event cache")]
+    API -->|booking events| Kafka{{Kafka}}
+    Kafka --> Notify["Notification service"]
 ```
 
-The browser and API share an origin in the Docker deployment. Nginx proxies `/api` requests to the API. PostgreSQL stores durable application data, Redis manages short-lived seat holds and caching, and Kafka transports booking events to the notification service.
+One deployable API with clear module boundaries (auth, event, booking, payment), plus one separate service where async decoupling pays off. Full microservices would add cost without solving a problem of this size.
 
-## Technology
+## Tech stack
 
-| Area | Technologies |
+| Area | Technology |
 |---|---|
-| Frontend | React, TypeScript, Vite, React Query, Tailwind CSS |
-| API | Java 21, Spring Boot, Spring Security, Spring Data JPA |
-| Data | PostgreSQL, Flyway, Redis |
-| Messaging | Apache Kafka, separate Spring Boot notification service |
-| Reliability | Resilience4j, idempotent payment requests, database seat constraints |
-| Delivery and observability | Docker Compose, GitHub Actions, Jenkins, Prometheus, Grafana |
+| Backend | Java 21, Spring Boot 3, Spring Security (JWT), Spring Data JPA |
+| Data | PostgreSQL, Flyway migrations, Redis (holds and caching) |
+| Messaging | Apache Kafka (KRaft mode) |
+| Resilience | Resilience4j (retry, circuit breaker, rate limiter) |
+| Frontend | React 19, TypeScript, Vite, React Query, Tailwind CSS |
+| Testing | JUnit 5, Mockito, Testcontainers, Postman collection |
+| DevOps | Docker, Docker Compose, GitHub Actions, Jenkinsfile, Prometheus and Grafana |
 
-## Run locally
+## Design decisions
 
-### Prerequisites
+**Two layers stop double booking.**
+1. Redis `SET key value NX EX 300` per seat: exactly one caller wins, and the TTL frees abandoned holds. Fast, and it absorbs almost all contention.
+2. A partial unique index in PostgreSQL, `UNIQUE (seat_id) WHERE active`, is the real guarantee. If Redis is flushed or fails over, the database still refuses a second owner.
 
-- Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine with the Compose plugin on Linux.
-- Git, if cloning the repository.
+**Idempotent payments.** The client sends an `Idempotency-Key`. The booking row is locked (`SELECT ... FOR UPDATE`), the key is checked after the lock, and a replay returns the original result. A key reused for a different booking is rejected.
 
-### Start the stack
+**Resilience around the payment provider.** Retry (3 attempts) wraps a circuit breaker. When the provider is down, requests fail with a clear 503 and the seats stay held.
 
-From the repository root, copy the example environment file and set a private JWT secret and database password. Do not commit `.env`.
+**Events only after commit.** Kafka messages are sent from an `AFTER_COMMIT` listener, so a rolled-back booking never announces itself. Messages are keyed by booking id, so one booking's events stay in order.
 
-PowerShell:
+**Schema owned by Flyway.** Migrations are in `backend/src/main/resources/db/migration`. Hibernate runs with `ddl-auto=validate` and only checks that the entities match.
 
-```powershell
-Copy-Item .env.example .env
-```
+**Security.** BCrypt passwords, short-lived access tokens (15 min) and refresh tokens (7 days) that cannot be used in place of each other, stateless API, role-based admin routes, per-IP rate limit on login and register, other users' bookings reported as "not found" so ids cannot be probed, uniform JSON errors with stable codes.
 
-Then edit `.env` and start the application:
+## Run it locally
 
-```powershell
+Requires Docker (Docker Desktop on Windows and Mac).
+
+```bash
+cp .env.example .env        # Windows: copy .env.example .env
+# edit .env and set JWT_SECRET to a random string of at least 32 characters
 docker compose up -d --build
 ```
 
-| Service | Local URL |
+| What | Where |
 |---|---|
-| Web application | http://localhost:3000 |
-| Swagger UI | http://localhost:8080/swagger-ui.html |
-| API health | http://localhost:8080/actuator/health |
+| App | http://localhost:3000 |
+| API docs (Swagger UI) | http://localhost:8080/swagger-ui.html |
+| Health | http://localhost:8080/actuator/health |
 
-The example configuration enables demo data and creates `demo@seatsure.dev` and `admin@seatsure.dev` using the configured `APP_SEED_PASSWORD`. This is for local development only. Change the example password before use, and disable seeding for a public deployment.
+With `APP_SEED_ENABLED=true` (the default in `.env.example`), demo users and three events are created on first start: `demo@seatsure.dev` (customer) and `admin@seatsure.dev` (admin), password from `APP_SEED_PASSWORD`.
 
-The simulated payment gateway does not contact a payment provider or charge real money. The UI offers a successful test payment, a declined payment, and a simulated provider outage.
-
-### Useful commands
-
-```powershell
-docker compose logs -f api
-docker compose logs notification
-docker compose stop
-docker compose down
-```
-
-`docker compose down -v` also deletes the local database volume and its data.
-
-To start the optional monitoring services:
-
-```powershell
-docker compose --profile monitoring up -d
-```
-
-Prometheus is available at http://localhost:9090 and Grafana at http://localhost:3001. Change `GRAFANA_PASSWORD` in `.env` before exposing or sharing a monitoring instance.
-
-## Tests and CI
-
-GitHub Actions runs backend and notification-service Maven verification and builds the frontend on pushes to `main` and on pull requests.
-
-Run the backend tests:
-
-```powershell
-Set-Location backend
-mvn verify
-```
-
-Testcontainers integration tests require Docker to be available. Run the frontend checks:
-
-```powershell
-Set-Location frontend
-npm ci
-npm run build
-```
-
-The test suite includes booking lifecycle and concurrency, payment idempotency, authentication, and JWT tests.
-
-## Publish the source to GitHub
-
-Create a **new empty GitHub repository** (do not initialize it with a README, license, or `.gitignore`). Then, from the project root in PowerShell, initialize and push the source:
-
-```powershell
-git init -b main
-git add .
-git status
-```
-
-Before committing, confirm that `.env` is not listed in the staged files. If it is staged, unstage it with `git rm --cached .env`; never push real secrets.
-
-```powershell
-git commit -m "Initial SeatSure release"
-git remote add origin https://github.com/YOUR-USERNAME/seatsure.git
-git push -u origin main
-```
-
-Replace `YOUR-USERNAME` with your GitHub username. The GitHub repository page is the **source-code link**, not the live application. The CI workflow starts running after the push; check its status under the repository's **Actions** tab.
-
-## Deploy the application
-
-The repository includes a production Compose override that keeps the database, Redis, Kafka, API, and web ports private and uses Caddy to obtain and renew an HTTPS certificate. It needs a Linux server with Docker Compose, a public IP, and ports 80 and 443 open. The complete stack is resource-intensive; plan for a server with at least 4 GB RAM.
-
-1. Create a Linux VPS and point a domain or supported dynamic DNS name to its public IP.
-2. Install Docker Engine and the Docker Compose plugin on the server.
-3. Clone your GitHub repository and move into the project directory.
-4. Create `.env` from `.env.example`. Set unique strong values for `JWT_SECRET`, `DB_PASSWORD`, `APP_SEED_PASSWORD`, and `GRAFANA_PASSWORD`; set `DOMAIN` to the hostname pointing to the server.
-5. Set `APP_SEED_ENABLED=false` for a public deployment. If seeding is intentionally enabled for a portfolio demo, use a unique strong demo password and do not reuse it elsewhere.
-6. Start the production stack:
+Useful commands:
 
 ```bash
+docker compose logs -f api                 # follow the API log
+docker compose logs notification           # see the notification emails
+docker compose stop                        # stop everything, keep data
+docker compose down -v                     # remove everything, including the database
+docker compose --profile monitoring up -d  # add Prometheus (:9090) and Grafana (:3001)
+```
+
+## Testing
+
+**Postman.** Import `postman/SeatSure.postman_collection.json` and run it with the Collection Runner. It has 37 requests with tests covering auth, booking, payment idempotency, seat conflicts, cancellation and admin rules. Run folder 6 (provider outage) by hand.
+
+**Automated tests.** They run on every push in GitHub Actions. To run them yourself:
+
+```bash
+cd backend
+mvn verify                                          # all tests, needs Docker for Testcontainers
+mvn test -Dtest='BookingTest,JwtServiceTest'        # fast unit tests only
+```
+
+- `BookingTest`, `JwtServiceTest`: booking lifecycle and token rules.
+- `BookingConcurrencyIntegrationTest`: 12 buyers race for one seat and exactly one wins; a second test deletes the Redis hold on purpose and shows PostgreSQL still blocks the double booking.
+- `PaymentIdempotencyIntegrationTest`: same key charges once, declined card keeps the booking payable, a key cannot be reused across bookings.
+- `AuthFlowIntegrationTest`: register, duplicate email, login, 401 and 403 paths.
+
+Integration tests start real PostgreSQL and Redis with Testcontainers and build the schema from the Flyway migrations. Kafka is mocked.
+
+## Deploy to a server
+
+Needs a Linux server with at least 4 GB of RAM (the stack runs two JVMs, Kafka, PostgreSQL and Redis) and ports 80 and 443 open.
+
+```bash
+git clone https://github.com/tejaltatiwar/SeatSure.git && cd SeatSure
+cp .env.example .env
+# set JWT_SECRET, DB_PASSWORD, APP_SEED_PASSWORD, and DOMAIN (for example seatsure.203-0-113-10.sslip.io)
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-When Caddy has issued the certificate, the application will be available at `https://YOUR-DOMAIN`. Check startup with:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f caddy
-```
-
-After you verify the deployed app, replace the **Live demo** line at the top of this README with the real URL. GitHub Pages alone is not sufficient for this project: it can host static frontend files but not the Spring API and its PostgreSQL, Redis, and Kafka services.
-
-## Add it to your resume
-
-Once deployed, add the live URL and source repository to your resume. For example:
-
-> **SeatSure — Event Ticket Booking Platform** | Java, Spring Boot, React, TypeScript, PostgreSQL, Redis, Kafka, Docker  
-> Built a full-stack ticketing app with expiring seat holds, concurrency-safe bookings, idempotent simulated payments, and asynchronous booking notifications.  
-> **Live demo:** `https://YOUR-DOMAIN` · **Source:** `https://github.com/YOUR-USERNAME/seatsure`
-
-Only list a live demo after it is deployed and tested. Keep the resume concise, and link to the screenshots and technical details in this repository for more context.
+`docker-compose.prod.yml` stops publishing the database, Redis, Kafka and API ports, and adds Caddy, which serves the site over HTTPS with an automatic certificate. Only ports 80 and 443 are reachable from outside.
 
 ## API overview
 
-| Method | Endpoint | Description |
+| Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/auth/refresh` | Register and authenticate |
-| `GET` | `/api/v1/events`, `/api/v1/events/{id}`, `/api/v1/events/{id}/seats` | Browse events and seat availability |
-| `POST` | `/api/v1/bookings` | Hold seats for an event |
-| `GET` | `/api/v1/bookings`, `/api/v1/bookings/{id}` | View your bookings |
-| `POST` | `/api/v1/bookings/{id}/cancel` | Cancel an unpaid booking |
-| `POST` | `/api/v1/bookings/{id}/payments` | Pay for a booking with an `Idempotency-Key` header |
-| `POST` | `/api/v1/admin/events` | Create an event (admin only) |
+| POST | `/api/v1/auth/register`, `/login`, `/refresh` | Public, rate limited |
+| GET | `/api/v1/events`, `/events/{id}`, `/events/{id}/seats` | Public. Listing cached in Redis for 60 s |
+| POST | `/api/v1/bookings` | Hold seats `{eventId, seatIds}` |
+| GET | `/api/v1/bookings`, `/bookings/{id}` | Your bookings |
+| POST | `/api/v1/bookings/{id}/cancel` | Release an unpaid booking |
+| POST | `/api/v1/bookings/{id}/payments` | Header `Idempotency-Key`. 201 paid, 402 declined, 503 provider down |
+| POST | `/api/v1/admin/events` | Admin only |
 
-## Repository layout
+Errors look like `{ "status": 409, "code": "SEAT_UNAVAILABLE", "message": "...", "path": "..." }`.
 
-```text
-backend/                  Spring Boot API and Flyway database migrations
-notification-service/     Kafka consumer for booking notifications
-frontend/                 React and TypeScript application
-docs/screenshots/         Application screenshots
-monitoring/               Prometheus and Grafana configuration
-.github/workflows/        GitHub Actions CI
-docker-compose.yml        Local development stack
-docker-compose.prod.yml   Production networking and HTTPS proxy
-Jenkinsfile               Jenkins pipeline
+## Project structure
+
+```
+backend/               Spring Boot API (auth, event, booking, payment modules)
+notification-service/  Kafka consumer that sends booking notifications
+frontend/              React + TypeScript app (served by nginx in Docker)
+postman/               API test collection
+monitoring/            Prometheus and Grafana configuration
+docker-compose.yml     Full local stack
+docker-compose.prod.yml  Production overrides (HTTPS, no exposed internals)
+Jenkinsfile            Build, test, publish and deploy pipeline
+.github/workflows/     GitHub Actions CI
 ```
 
-## Notes and limitations
+## Trade-offs and next steps
 
-- Payments are simulated; no real payment provider is integrated.
-- Notifications are logged by the demo notification service rather than sent as real email.
-- Kafka publishing is not transactionally coupled to the database. A transactional outbox would prevent event loss if the broker is unavailable at commit time.
-- Access and refresh tokens are stored in browser local storage. A production-grade public service should consider a stricter content security policy and secure, httpOnly cookies.
-- Production deployment requires operational care: secure secrets, backups, updates, monitoring, and a managed database or a tested database backup/restore process.
+- **Payments are simulated.** `PaymentGateway` is a port with a simulated implementation (test cards `tok_visa`, `tok_decline`, `tok_timeout`). Integrating Razorpay or Stripe means a new implementation plus a signed webhook for confirmation.
+- **Kafka publishing is not transactional with the database.** If the broker is down at commit time, the message is lost. A transactional outbox table would fix this.
+- **The payment call happens while the booking row is locked.** Fine at this scale. At higher volume, split into "reserve payment" and "confirm on webhook".
+- **Tokens are stored in `localStorage`.** Add a strict Content-Security-Policy, or move the refresh token to an httpOnly cookie.
+- **Expiry sweep runs every 30 s,** so a seat can look taken for up to 30 s after its hold ends.
+- **Next:** Redis-backed distributed rate limiting, a load test with published results, and OpenTelemetry tracing.
